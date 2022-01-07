@@ -2,8 +2,8 @@ name: Image
 
 on:
   push:
-    branches:
-      - master
+    branches-ignore:
+      - '**'
 
 env:
   GOLANG_VERSION: '1.16.11'

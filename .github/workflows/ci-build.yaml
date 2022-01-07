@@ -1,14 +1,11 @@
 name: Integration tests
 on: 
   push:
-    branches:
-      - 'master'
-      - 'release-*'
-      - '!release-1.4'
-      - '!release-1.5'
+    branches-ignore:
+      - '**'
   pull_request:
-    branches:
-      - 'master'
+    branches-ignore:
+      - '**'
 
 env:
   # Golang version to use across CI steps
