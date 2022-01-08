@@ -9,17 +9,13 @@ jobs:
 
       - name: Get latest tag
         id: vars
-        run: echo ::set-output name=tag::${GITHUB_REF:10}
+        run: echo ::set-output name=tag::${GITHUB_REF:10//\//}
 
       - name: Clone repository
         uses: actions/checkout@v2
         #with:
           #ref: ${GITHUB_REF}
           #ref: ${{ steps.vars.outputs.tag }}
-
-      - name: Yarn config
-        run: pwd ; ls -l ; yarn config set network-timeout 600000 -g
-        shell: bash
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
