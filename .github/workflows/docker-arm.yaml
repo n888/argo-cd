@@ -18,7 +18,7 @@ jobs:
           #ref: ${{ steps.vars.outputs.tag }}
 
       - name: Yarn config
-        run: pwd ; ls -l ; yarn config set network-timeout 600000 -g`
+        run: pwd ; ls -l ; yarn config set network-timeout 600000 -g
         shell: bash
 
       - name: Set up QEMU
