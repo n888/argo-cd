@@ -13,8 +13,8 @@ jobs:
 
       - name: Clone repository
         uses: actions/checkout@v2
-        with:
-          ref: ${GITHUB_REF}
+        #with:
+          #ref: ${GITHUB_REF}
           #ref: ${{ steps.vars.outputs.tag }}
 
       - name: Yarn config
