@@ -148,6 +148,12 @@ type ArgoCDSettings struct {
 	MaxPodLogsToRender int64 `json:"maxPodLogsToRender"`
 	// ExecEnabled indicates whether the UI exec feature is enabled
 	ExecEnabled bool `json:"execEnabled"`
+	// TerminalSessionRecordingEnabled indicates whether terminal recording is enabled
+	TerminalSessionRecordingEnabled bool `json:"terminalSessionRecordingEnabled"`
+	// TerminalSessionRecordingOutput indicates where terminal recording should be saved (stdout or file)
+	TerminalSessionRecordingOutput string `json:"terminalSessionRecordingOutput"`
+	// TerminalSessionRecordingPath indicates the path where terminal recordings should be saved (used when output is file)
+	TerminalSessionRecordingPath string `json:"terminalSessionRecordingPath"`
 	// ExecShells restricts which shells are allowed for `exec` and in which order they are tried
 	ExecShells []string `json:"execShells"`
 	// TrackingMethod defines the resource tracking method to be used
@@ -547,6 +553,16 @@ const (
 	helmValuesFileSchemesKey = "helm.valuesFileSchemes"
 	// execEnabledKey is the key to configure whether the UI exec feature is enabled
 	execEnabledKey = "exec.enabled"
+	// terminalSessionRecordingEnabledKey is the key to configure whether terminal recording is enabled
+	terminalSessionRecordingEnabledKey = "terminal.session.recording.enabled"
+	// terminalSessionRecordingOutputKey is the key to configure where terminal recording should be saved (stdout or file)
+	terminalSessionRecordingOutputKey = "terminal.session.recording.output"
+	// terminalSessionRecordingPathKey is the key to configure the path where terminal recordings should be saved (used when output is file)
+	terminalSessionRecordingPathKey = "terminal.session.recording.path"
+	// RecordingOutputStdout writes recordings to the server log stream.
+	RecordingOutputStdout = "stdout"
+	// RecordingOutputFile writes recordings to .cast files on disk.
+	RecordingOutputFile = "file"
 	// execShellsKey is the key to configure which shells are allowed for `exec` and in what order they are tried
 	execShellsKey = "exec.shells"
 	// oidcTLSInsecureSkipVerifyKey is the key to configure whether TLS cert verification is skipped for OIDC connections
@@ -1677,6 +1693,25 @@ func updateSettingsFromConfigMap(settings *ArgoCDSettings, argoCDCM *corev1.Conf
 		}
 	}
 	settings.ExecEnabled = argoCDCM.Data[execEnabledKey] == "true"
+	settings.TerminalSessionRecordingEnabled = argoCDCM.Data[terminalSessionRecordingEnabledKey] == "true"
+	settings.TerminalSessionRecordingOutput = argoCDCM.Data[terminalSessionRecordingOutputKey]
+	if settings.TerminalSessionRecordingOutput == "" {
+		settings.TerminalSessionRecordingOutput = RecordingOutputStdout
+	}
+	settings.TerminalSessionRecordingPath = argoCDCM.Data[terminalSessionRecordingPathKey]
+	if settings.TerminalSessionRecordingEnabled {
+		switch settings.TerminalSessionRecordingOutput {
+		case RecordingOutputStdout:
+		case RecordingOutputFile:
+			if settings.TerminalSessionRecordingPath == "" {
+				log.Warnf("%s is %q but %s is empty - terminal recording will be disabled", terminalSessionRecordingOutputKey, RecordingOutputFile, terminalSessionRecordingPathKey)
+				settings.TerminalSessionRecordingEnabled = false
+			}
+		default:
+			log.Warnf("Unrecognized value %q for %s (expected %q or %q) - terminal recording will be disabled", settings.TerminalSessionRecordingOutput, terminalSessionRecordingOutputKey, RecordingOutputStdout, RecordingOutputFile)
+			settings.TerminalSessionRecordingEnabled = false
+		}
+	}
 	execShells := argoCDCM.Data[execShellsKey]
 	if execShells != "" {
 		settings.ExecShells = strings.Split(execShells, ",")

@@ -374,6 +374,18 @@ data:
   # exec.shells restricts which shells are allowed for `exec`, and in which order they are attempted
   exec.shells: "bash,sh,powershell,cmd"
 
+  # terminal.session.recording.enabled indicates whether terminal recording is enabled. It is disabled by default.
+  terminal.session.recording.enabled: "false"
+
+  # terminal.session.recording.output indicates where terminal recording should be saved.
+  # Valid values are "stdout" and "file". Default is "stdout".
+  terminal.session.recording.output: "stdout"
+
+  # terminal.session.recording.path indicates the path where terminal recordings should be saved.
+  # This is only used when terminal.session.recording.output is set to "file".
+  # Filename pattern: <app_name>-<user_name>-<pod_name>-<container_name>-<timestamp>.cast
+  terminal.session.recording.path: "/tmp"
+
   # oidc.tls.insecure.skip.verify determines whether certificate verification is skipped when verifying tokens with the
   # configured OIDC provider (either external or the bundled Dex instance). Setting this to "true" will cause JWT
   # token verification to pass despite the OIDC provider having an invalid certificate. Only set to "true" if you

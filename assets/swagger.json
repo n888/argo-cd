@@ -5771,6 +5771,15 @@
         "syncWithReplaceAllowed": {
           "type": "boolean"
         },
+        "terminalSessionRecordingEnabled": {
+          "type": "boolean"
+        },
+        "terminalSessionRecordingOutput": {
+          "type": "string"
+        },
+        "terminalSessionRecordingPath": {
+          "type": "string"
+        },
         "trackingMethod": {
           "type": "string"
         },

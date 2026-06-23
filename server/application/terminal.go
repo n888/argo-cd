@@ -41,8 +41,11 @@ type terminalHandler struct {
 }
 
 type TerminalOptions struct {
-	DisableAuth bool
-	Enf         *rbac.Enforcer
+	DisableAuth      bool
+	Enf              *rbac.Enforcer
+	RecordingEnabled bool
+	RecordingOutput  string
+	RecordingPath    string
 }
 
 // NewHandler returns a new terminal handler.
@@ -218,7 +221,8 @@ func (s *terminalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	fieldLog.Info("terminal session starting")
 
-	session, err := newTerminalSession(ctx, w, r, nil, s.sessionManager, appRBACName, s.terminalOptions)
+	userName := util_session.Username(ctx)
+	session, err := newTerminalSession(ctx, w, r, nil, s.sessionManager, appRBACName, userName, podName, container, s.terminalOptions)
 	if err != nil {
 		http.Error(w, "Failed to start terminal session", http.StatusBadRequest)
 		return

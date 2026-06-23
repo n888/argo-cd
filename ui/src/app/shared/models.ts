@@ -624,6 +624,9 @@ export interface AuthSettings {
     uiBannerPermanent: boolean;
     uiBannerPosition: string;
     execEnabled: boolean;
+    terminalSessionRecordingEnabled: boolean;
+    terminalSessionRecordingOutput: string;
+    terminalSessionRecordingPath: string;
     appsInAnyNamespaceEnabled: boolean;
     hydratorEnabled: boolean;
     syncWithReplaceAllowed: boolean;

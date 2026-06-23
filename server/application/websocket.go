@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +16,7 @@ import (
 	httputil "github.com/argoproj/argo-cd/v3/util/http"
 	"github.com/argoproj/argo-cd/v3/util/rbac"
 	util_session "github.com/argoproj/argo-cd/v3/util/session"
+	"github.com/argoproj/argo-cd/v3/util/settings"
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
@@ -44,6 +49,7 @@ type terminalSession struct {
 	token          *string
 	appRBACName    string
 	terminalOpts   *TerminalOptions
+	recorder       *asciicastRecorder
 }
 
 // getToken get auth token from web socket request
@@ -53,7 +59,7 @@ func getToken(r *http.Request) (string, error) {
 }
 
 // newTerminalSession create terminalSession
-func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Request, responseHeader http.Header, sessionManager *util_session.SessionManager, appRBACName string, terminalOpts *TerminalOptions) (*terminalSession, error) {
+func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Request, responseHeader http.Header, sessionManager *util_session.SessionManager, appRBACName string, userName string, podName string, container string, terminalOpts *TerminalOptions) (*terminalSession, error) {
 	token, err := getToken(r)
 	if err != nil {
 		return nil, err
@@ -73,11 +79,44 @@ func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		appRBACName:    appRBACName,
 		terminalOpts:   terminalOpts,
 	}
+	if terminalOpts.RecordingEnabled {
+		startTime := time.Now()
+		logger := log.WithFields(log.Fields{
+			"terminal_session_app":       appRBACName,
+			"terminal_session_user":      userName,
+			"terminal_session_pod":       podName,
+			"terminal_session_container": container,
+		})
+		switch terminalOpts.RecordingOutput {
+		case settings.RecordingOutputFile:
+			timestamp := startTime.Format("20060102-150405.000")
+			// Build the basename from the session identifiers, then sanitize the whole thing:
+			// ":" and "/" become "_" so no component can inject a path separator and escape
+			// RecordingPath. Sanitizing the basename (not the joined path) keeps the configured
+			// recording directory's own separators intact.
+			sanitizer := strings.NewReplacer(":", "_", "/", "_")
+			basename := sanitizer.Replace(fmt.Sprintf("%s-%s-%s-%s-%s.cast", appRBACName, userName, podName, container, timestamp))
+			filename := filepath.Join(terminalOpts.RecordingPath, basename)
+			f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if err != nil {
+				log.Errorf("failed to open recording file %s, disabling recording for this session: %v", filename, err)
+			} else {
+				session.recorder = newAsciicastRecorder(startTime, logger, false, f)
+				log.Infof("recording session to %s", filename)
+			}
+		case settings.RecordingOutputStdout:
+			session.recorder = newAsciicastRecorder(startTime, logger, true, nil)
+		}
+	}
+
 	return session, nil
 }
 
-// Done close the done channel.
+// Done closes the done channel and flushes/closes the recorder.
 func (t *terminalSession) Done() {
+	if t.recorder != nil {
+		t.recorder.Close()
+	}
 	close(t.doneChan)
 }
 
@@ -204,6 +243,9 @@ func (t *terminalSession) Read(p []byte) (int, error) {
 		return copy(p, msg.Data), nil
 	case "resize":
 		t.sizeChan <- remotecommand.TerminalSize{Width: msg.Cols, Height: msg.Rows}
+		if t.recorder != nil {
+			t.recorder.recordResize(msg.Cols, msg.Rows)
+		}
 		return 0, nil
 	default:
 		return copy(p, EndOfTransmission), fmt.Errorf("unknown message type %s", msg.Operation)
@@ -223,9 +265,13 @@ func (t *terminalSession) Ping() error {
 
 // Write called from remote command whenever there is any output
 func (t *terminalSession) Write(p []byte) (int, error) {
+	data := string(p)
+	if t.recorder != nil {
+		t.recorder.recordOutput(data)
+	}
 	msg, err := json.Marshal(TerminalMessage{
 		Operation: "stdout",
-		Data:      string(p),
+		Data:      data,
 	})
 	if err != nil {
 		log.Errorf("write parse message err: %v", err)
@@ -244,4 +290,154 @@ func (t *terminalSession) Write(p []byte) (int, error) {
 // Close closes websocket connection
 func (t *terminalSession) Close() error {
 	return t.wsConn.Close()
+}
+
+const (
+	// defaultRecordingCols and defaultRecordingRows are the terminal dimensions recorded in
+	// the asciicast header when output is captured before the client sends its initial resize.
+	defaultRecordingCols uint16 = 80
+	defaultRecordingRows uint16 = 24
+
+	// recorderFrameBufferSize bounds how many asciicast frames may queue for the background
+	// writer before frames are dropped. Dropping (rather than blocking the producer) keeps a
+	// slow recording sink from stalling the interactive terminal.
+	recorderFrameBufferSize = 1024
+	// recorderFlushTimeout bounds how long session teardown waits for the writer to flush
+	// buffered frames and close the sink, so a hung sink cannot wedge session cleanup.
+	recorderFlushTimeout = 5 * time.Second
+)
+
+// asciicastRecorder serializes a terminal session into asciicast v2 frames. Frames are
+// marshalled on the calling goroutine, keeping their timestamps accurate, and handed to a
+// dedicated writer goroutine over a bounded channel, so slow sink I/O never blocks the
+// interactive terminal. When the buffer is full, frames are dropped rather than queued.
+type asciicastRecorder struct {
+	startTime   time.Time
+	logger      *log.Entry
+	logToStdout bool
+	sink        io.WriteCloser // optional file sink; nil for stdout-only recording
+
+	frames chan string
+	done   chan struct{} // closed by the writer goroutine once it has flushed and closed the sink
+
+	mu         sync.Mutex
+	headerSent bool
+	closed     bool
+	dropped    int
+}
+
+// newAsciicastRecorder builds a recorder and starts its background writer goroutine. sink may
+// be nil to record to stdout logs only.
+func newAsciicastRecorder(startTime time.Time, logger *log.Entry, logToStdout bool, sink io.WriteCloser) *asciicastRecorder {
+	r := &asciicastRecorder{
+		startTime:   startTime,
+		logger:      logger,
+		logToStdout: logToStdout,
+		sink:        sink,
+		frames:      make(chan string, recorderFrameBufferSize),
+		done:        make(chan struct{}),
+	}
+	go r.run()
+	return r
+}
+
+// recordOutput enqueues a terminal output frame.
+func (r *asciicastRecorder) recordOutput(data string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return
+	}
+	if !r.headerSent {
+		r.sendHeaderLocked(defaultRecordingCols, defaultRecordingRows)
+	}
+	ts := time.Since(r.startTime).Seconds()
+	line, _ := json.Marshal([]any{ts, "o", data})
+	r.enqueueLocked(string(line))
+}
+
+// recordResize enqueues a terminal resize event.
+func (r *asciicastRecorder) recordResize(cols, rows uint16) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return
+	}
+	if !r.headerSent {
+		r.sendHeaderLocked(cols, rows)
+		return
+	}
+	ts := time.Since(r.startTime).Seconds()
+	line, _ := json.Marshal([]any{ts, "r", fmt.Sprintf("%dx%d", cols, rows)})
+	r.enqueueLocked(string(line))
+}
+
+// sendHeaderLocked writes the asciicast v2 header.
+func (r *asciicastRecorder) sendHeaderLocked(cols, rows uint16) {
+	header := map[string]any{
+		"version":   2,
+		"width":     cols,
+		"height":    rows,
+		"timestamp": r.startTime.Unix(),
+	}
+	line, _ := json.Marshal(header)
+	r.enqueueLocked(string(line))
+	r.headerSent = true
+}
+
+// enqueueLocked attempts to send a frame to the writer; drops the frame if the buffer is full.
+// Callers must hold r.mu.
+func (r *asciicastRecorder) enqueueLocked(line string) {
+	select {
+	case r.frames <- line:
+	default:
+		r.dropped++
+		if r.dropped == 1 {
+			r.logger.Warnf("recording buffer full; dropping frames to avoid stalling the terminal (recording will be incomplete)")
+		}
+	}
+}
+
+// run is the background writer that flushes frames to the sink.
+func (r *asciicastRecorder) run() {
+	defer close(r.done)
+	if r.sink != nil {
+		defer r.sink.Close()
+	}
+	var writeErrLogged bool
+	for line := range r.frames {
+		if r.logToStdout {
+			r.logger.Infof("%s", line)
+		}
+		if r.sink != nil {
+			if _, err := io.WriteString(r.sink, line+"\n"); err != nil && !writeErrLogged {
+				r.logger.Errorf("failed to write recording frame, recording may be incomplete: %v", err)
+				writeErrLogged = true
+			}
+		}
+	}
+}
+
+// Close shuts down the recorder and waits for the buffer to flush.
+func (r *asciicastRecorder) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	dropped := r.dropped
+	close(r.frames) // safe under r.mu: producers check r.closed under the same lock before sending
+	r.mu.Unlock()
+
+	select {
+	case <-r.done:
+	case <-time.After(recorderFlushTimeout):
+		r.logger.Warnf("recording flush timed out after %s; some frames may be lost", recorderFlushTimeout)
+	}
+	if dropped > 0 {
+		r.logger.Warnf("recording dropped %d frame(s) due to a slow sink; recording is incomplete", dropped)
+	}
 }
