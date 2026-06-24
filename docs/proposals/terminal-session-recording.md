@@ -37,16 +37,18 @@ The recorder is asynchronous. `Write` and `Read` only marshal a frame and hand i
 ```mermaid
 flowchart LR
     Pod([Remote Pod TTY]) -->|stdout bytes| Write["Write()"]
-    Browser([User Browser]) -->|resize event| Read["Read()"]
+    Term([Web Terminal UI]) -->|resize event| Read["Read()"]
 
-    Write -->|forward raw bytes| Browser
-    Write -->|recordOutput| Rec[asciicastRecorder]
-    Read -->|recordResize| Rec
+    Write -->|forward raw bytes<br/>live, synchronous| Term
+    Write -.->|recordOutput| Rec[asciicastRecorder]
+    Read -.->|recordResize| Rec
 
     Rec -->|asciicast JSON frame| Mode{output mode}
     Mode -->|stdout| Log[("Centralized Logging<br/>VictoriaLogs / Loki /<br> Cloud Log Provider")]
     Mode -->|file| Cast[(".cast file")]
 ```
+
+The solid path is the live terminal: pod output is forwarded straight to the Web Terminal UI and is never blocked by recording. The dashed branch is the decoupled recorder — `Write()` and `Read()` hand frames to the `asciicastRecorder`, whose sink I/O runs on a separate goroutine (see below), so a slow or hung recording sink cannot stall the interactive terminal.
 
 The diagram below adds the locking. `Write()`, `Read()`, and `Close()` share one `sync.Mutex`. Under the lock the recorder checks `closed`, emits the lazy header, and does a non-blocking enqueue onto the channel. Because producers check `closed` under the same lock `Close()` uses to close the channel, there is no send-on-closed-channel panic. The sink I/O runs in the writer goroutine, outside the lock.
 
