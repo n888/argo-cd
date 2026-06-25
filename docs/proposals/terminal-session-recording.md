@@ -79,7 +79,7 @@ flowchart LR
 ### Concurrency and Performance
 To prevent recording I/O from impacting terminal responsiveness, each session utilizes an isolated recorder and a background writer goroutine. 
 
-`recordOutput` and `recordResize` marshal frames on the calling goroutine to maintain timestamp accuracy and enqueue them via a bounded channel. The background writer performs the actual sink I/O. If the buffer fills (e.g., due to a slow NFS/EFS volume), frames are dropped rather than blocking the interactive shell. This prioritizes terminal responsiveness over recording completeness; dropped frames are logged to indicate the recording is incomplete.
+`recordOutput` and `recordResize` marshal frames on the calling goroutine to maintain timestamp accuracy and enqueue them via a bounded channel. The background writer performs the actual sink I/O. If the buffer fills (e.g., due to a slow NFS volume), frames are dropped rather than blocking the interactive shell. This prioritizes terminal responsiveness over recording completeness; dropped frames are logged to indicate the recording is incomplete.
 
 A session-scoped `sync.Mutex` serializes the lazy header emission and enqueueing between the TTY output pump and the WebSocket resize reader. On session teardown, `Close()` flushes buffered frames and closes the sink within a defined timeout to prevent hung sinks from blocking cleanup.
 
