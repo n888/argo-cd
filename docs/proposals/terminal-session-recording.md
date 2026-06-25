@@ -39,12 +39,12 @@ flowchart LR
     Pod([Remote Pod TTY]) -->|stdout bytes| Write["Write()"]
     Term([Web Terminal UI]) -->|resize event| Read["Read()"]
 
-    Write -->|forward raw bytes<br/>live, synchronous| Term
+    Write -->|forward output<br/>live, synchronous| Term
     Write -.->|recordOutput| Rec[asciicastRecorder]
     Read -.->|recordResize| Rec
 
     Rec -->|asciicast JSON frame| Mode{output mode}
-    Mode -->|stdout| Log[("Centralized Logging<br/>VictoriaLogs / Loki /<br> Cloud Log Provider")]
+    Mode -->|stdout| Log[("Centralized Logging<br/>VictoriaLogs / Loki /<br/>Cloud Log Provider")]
     Mode -->|file| Cast[(".cast file")]
 ```
 
@@ -72,7 +72,7 @@ flowchart LR
     end
 
     Writer -->|asciicast frame| Mode{output mode}
-    Mode -->|stdout| Log[(Centalized<br>Logging)]
+    Mode -->|stdout| Log[("Centralized<br/>Logging")]
     Mode -->|file| Cast[(".cast file")]
 ```
 
@@ -98,6 +98,9 @@ A session-scoped `sync.Mutex` serializes the lazy header emission and enqueueing
 | `terminal.session.recording.enabled` | `false` | Enables or disables terminal recording. |
 | `terminal.session.recording.output` | `stdout` | Output destination: `stdout` or `file`. |
 | `terminal.session.recording.path` | `""` | Directory for `.cast` files when using `file` mode. |
+
+> [!NOTE]
+> Recording configuration is validated when `argocd-cm` is loaded. If `output` is `file` but `path` is empty, or if `output` is set to a value other than `stdout` or `file`, recording is disabled and a warning is logged. In `file` mode, if the `.cast` file cannot be opened when a session starts, recording is disabled for that session only and the error is logged.
 
 ## Impact
 The implementation introduces minimal CPU overhead (timestamping and JSON marshalling) and maintains compatibility with any standard Asciicast v2 player.
