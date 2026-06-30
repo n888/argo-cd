@@ -623,6 +623,7 @@ export interface AuthSettings {
     uiBannerURL: string;
     uiBannerPermanent: boolean;
     uiBannerPosition: string;
+    uiLoginButtonText: string;
     execEnabled: boolean;
     terminalSessionRecordingEnabled: boolean;
     terminalSessionRecordingOutput: string;
