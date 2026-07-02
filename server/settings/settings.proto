@@ -48,12 +48,9 @@ message Settings {
     bool hydratorEnabled = 28;
     bool syncWithReplaceAllowed = 29;
     string uiLoginButtonText = 30;
-<<<<<<< HEAD
     bool terminalSessionRecordingEnabled = 31;
     string terminalSessionRecordingOutput = 32;
     string terminalSessionRecordingPath = 33;
-=======
->>>>>>> master
 }
 
 message GoogleAnalyticsConfig {
