@@ -113,23 +113,21 @@ func (s *Server) Get(ctx context.Context, _ *settingspkg.SettingsQuery) (*settin
 			ChatText:   help.ChatText,
 			BinaryUrls: help.BinaryURLs,
 		},
-		UserLoginsDisabled:              userLoginsDisabled,
-		KustomizeVersions:               kustomizeVersions,
-		UiCssURL:                        argoCDSettings.UiCssURL,
-		UiLoginButtonText:               argoCDSettings.UiLoginButtonText,
-		TrackingMethod:                  trackingMethod,
-		InstallationID:                  installationID,
-		ExecEnabled:                     argoCDSettings.ExecEnabled,
-		TerminalSessionRecordingEnabled: argoCDSettings.TerminalSessionRecordingEnabled,
-		TerminalSessionRecordingOutput:  argoCDSettings.TerminalSessionRecordingOutput,
-		TerminalSessionRecordingPath:    argoCDSettings.TerminalSessionRecordingPath,
-		AppsInAnyNamespaceEnabled:       s.appsInAnyNamespaceEnabled,
-		ImpersonationEnabled:            argoCDSettings.ImpersonationEnabled,
-		HydratorEnabled:                 s.hydratorEnabled,
-		SyncWithReplaceAllowed:          s.syncWithReplaceAllowed,
+		UserLoginsDisabled:        userLoginsDisabled,
+		KustomizeVersions:         kustomizeVersions,
+		UiCssURL:                  argoCDSettings.UiCssURL,
+		UiLoginButtonText:         argoCDSettings.UiLoginButtonText,
+		TrackingMethod:            trackingMethod,
+		InstallationID:            installationID,
+		ExecEnabled:               argoCDSettings.ExecEnabled,
+		AppsInAnyNamespaceEnabled: s.appsInAnyNamespaceEnabled,
+		ImpersonationEnabled:      argoCDSettings.ImpersonationEnabled,
+		HydratorEnabled:           s.hydratorEnabled,
+		SyncWithReplaceAllowed:    s.syncWithReplaceAllowed,
 	}
 
 	if sessionmgr.LoggedIn(ctx) || s.disableAuth {
+		set.TerminalSessionRecordingEnabled = argoCDSettings.TerminalSessionRecordingEnabled
 		set.UiBannerContent = argoCDSettings.UiBannerContent
 		set.UiBannerURL = argoCDSettings.UiBannerURL
 		set.UiBannerPermanent = argoCDSettings.UiBannerPermanent

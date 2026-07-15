@@ -49,8 +49,6 @@ message Settings {
     bool syncWithReplaceAllowed = 29;
     string uiLoginButtonText = 30;
     bool terminalSessionRecordingEnabled = 31;
-    string terminalSessionRecordingOutput = 32;
-    string terminalSessionRecordingPath = 33;
 }
 
 message GoogleAnalyticsConfig {

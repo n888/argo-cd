@@ -626,8 +626,6 @@ export interface AuthSettings {
     uiLoginButtonText: string;
     execEnabled: boolean;
     terminalSessionRecordingEnabled: boolean;
-    terminalSessionRecordingOutput: string;
-    terminalSessionRecordingPath: string;
     appsInAnyNamespaceEnabled: boolean;
     hydratorEnabled: boolean;
     syncWithReplaceAllowed: boolean;
