@@ -3,6 +3,7 @@ package application
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -122,4 +123,49 @@ func TestAsciicastRecorder_SlowSinkDoesNotBlock(t *testing.T) {
 
 	close(sink.release) // unblock the writer so Close can flush and join
 	recorder.Close()
+}
+
+func TestOpenRecordingFile(t *testing.T) {
+	// 2026-07-15 01:30 at UTC+2 is 2026-07-14 23:30 UTC; the dated directory and the filename
+	// timestamp must both use the UTC date.
+	startTime := time.Date(2026, time.July, 15, 1, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+
+	t.Run("date template creates dated directory", func(t *testing.T) {
+		base := t.TempDir()
+		f, err := openRecordingFile(base+"/{{.Year}}/{{.Month}}/{{.Day}}", startTime, "default/guestbook", "alice:admin", "pod-1", "main")
+		require.NoError(t, err)
+		defer f.Close()
+
+		dir := filepath.Join(base, "2026", "07", "14")
+		info, err := os.Stat(dir)
+		require.NoError(t, err)
+		assert.True(t, info.IsDir())
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+		// Session identifiers are sanitized (":" and "/" -> "_") and the timestamp is UTC.
+		assert.Equal(t, filepath.Join(dir, "default_guestbook-alice_admin-pod-1-main-20260714-233000.000.cast"), f.Name())
+		fileInfo, err := os.Stat(f.Name())
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), fileInfo.Mode().Perm())
+	})
+
+	t.Run("plain path works unchanged", func(t *testing.T) {
+		base := t.TempDir()
+		f, err := openRecordingFile(base, startTime, "app", "user", "pod", "main")
+		require.NoError(t, err)
+		defer f.Close()
+		assert.Equal(t, base, filepath.Dir(f.Name()))
+	})
+
+	t.Run("invalid template returns error", func(t *testing.T) {
+		_, err := openRecordingFile(t.TempDir()+"/{{.Year", startTime, "app", "user", "pod", "main")
+		require.ErrorContains(t, err, "failed to render recording path template")
+	})
+
+	t.Run("directory creation failure returns error", func(t *testing.T) {
+		blocker := filepath.Join(t.TempDir(), "blocker")
+		require.NoError(t, os.WriteFile(blocker, []byte("not a directory"), 0o600))
+		_, err := openRecordingFile(blocker+"/{{.Year}}", startTime, "app", "user", "pod", "main")
+		require.ErrorContains(t, err, "failed to create recording directory")
+	})
 }

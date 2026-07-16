@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,10 +14,12 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -1750,6 +1753,9 @@ func updateSettingsFromConfigMap(settings *ArgoCDSettings, argoCDCM *corev1.Conf
 			if settings.TerminalSessionRecordingPath == "" {
 				log.Warnf("%s is %q but %s is empty - terminal recording will be disabled", terminalSessionRecordingOutputKey, RecordingOutputFile, terminalSessionRecordingPathKey)
 				settings.TerminalSessionRecordingEnabled = false
+			} else if _, err := RenderTerminalSessionRecordingPath(settings.TerminalSessionRecordingPath, time.Now()); err != nil {
+				log.Warnf("%s is invalid: %v - terminal recording will be disabled", terminalSessionRecordingPathKey, err)
+				settings.TerminalSessionRecordingEnabled = false
 			}
 		default:
 			log.Warnf("Unrecognized value %q for %s (expected %q or %q) - terminal recording will be disabled", settings.TerminalSessionRecordingOutput, terminalSessionRecordingOutputKey, RecordingOutputStdout, RecordingOutputFile)
@@ -1779,6 +1785,37 @@ func getExtensionConfigs(cmData map[string]string) map[string]string {
 		}
 	}
 	return result
+}
+
+// terminalSessionRecordingPathData is the data available to the terminal.session.recording.path
+// Go template.
+type terminalSessionRecordingPathData struct {
+	Year  string // zero-padded, e.g. "2026"
+	Month string // zero-padded, e.g. "07"
+	Day   string // zero-padded, e.g. "14"
+}
+
+// RenderTerminalSessionRecordingPath renders the recording path template against t in UTC. A path
+// with no template actions renders to itself. The rendered path must be absolute.
+func RenderTerminalSessionRecordingPath(pathTemplate string, t time.Time) (string, error) {
+	tmpl, err := template.New("terminal-session-recording-path").Parse(pathTemplate)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template %s: %w", pathTemplate, err)
+	}
+	utc := t.UTC()
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, terminalSessionRecordingPathData{
+		Year:  utc.Format("2006"),
+		Month: utc.Format("01"),
+		Day:   utc.Format("02"),
+	}); err != nil {
+		return "", fmt.Errorf("failed to execute go template %s: %w", pathTemplate, err)
+	}
+	rendered := buf.String()
+	if !filepath.IsAbs(rendered) {
+		return "", fmt.Errorf("template %s rendered to %q which is not an absolute path", pathTemplate, rendered)
+	}
+	return filepath.Clean(rendered), nil
 }
 
 // ValidateExternalURL ensures the external URL that is set on the configmap is valid

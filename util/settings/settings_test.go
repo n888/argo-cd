@@ -2967,3 +2967,159 @@ func TestSettingsManager_GetWebhookRefreshJitter(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderTerminalSessionRecordingPath(t *testing.T) {
+	// 2026-07-15 01:30 at UTC+2 is 2026-07-14 23:30 UTC; rendering must use the UTC date.
+	now := time.Date(2026, time.July, 15, 1, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	tests := []struct {
+		name         string
+		pathTemplate string
+		expected     string
+		expectedErr  string
+	}{
+		{
+			name:         "plain path renders to itself",
+			pathTemplate: "/recordings",
+			expected:     "/recordings",
+		},
+		{
+			name:         "date template renders zero-padded UTC components",
+			pathTemplate: "/recordings/{{.Year}}/{{.Month}}/{{.Day}}",
+			expected:     "/recordings/2026/07/14",
+		},
+		{
+			name:         "trailing slash is cleaned",
+			pathTemplate: "/recordings/{{.Year}}/",
+			expected:     "/recordings/2026",
+		},
+		{
+			name:         "unclosed action fails to parse",
+			pathTemplate: "/recordings/{{.Year",
+			expectedErr:  "failed to parse template",
+		},
+		{
+			name:         "unknown field fails to execute",
+			pathTemplate: "/recordings/{{.Yearr}}",
+			expectedErr:  "failed to execute go template",
+		},
+		{
+			name:         "relative path is rejected",
+			pathTemplate: "recordings/{{.Year}}",
+			expectedErr:  "not an absolute path",
+		},
+		{
+			name:         "empty path is rejected",
+			pathTemplate: "",
+			expectedErr:  "not an absolute path",
+		},
+		{
+			name:         "template rendering to empty is rejected",
+			pathTemplate: `{{if eq .Year "1999"}}/recordings{{end}}`,
+			expectedErr:  "not an absolute path",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered, err := RenderTerminalSessionRecordingPath(tt.pathTemplate, now)
+			if tt.expectedErr != "" {
+				assert.ErrorContains(t, err, tt.expectedErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, rendered)
+		})
+	}
+}
+
+func TestTerminalSessionRecordingSettings(t *testing.T) {
+	tests := []struct {
+		name            string
+		data            map[string]string
+		expectedEnabled bool
+		expectedOutput  string
+	}{
+		{
+			name:            "not configured",
+			data:            map[string]string{},
+			expectedEnabled: false,
+			expectedOutput:  RecordingOutputStdout,
+		},
+		{
+			name: "enabled defaults to stdout output",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+			},
+			expectedEnabled: true,
+			expectedOutput:  RecordingOutputStdout,
+		},
+		{
+			name: "file output with plain path",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "file",
+				"terminal.session.recording.path":    "/recordings",
+			},
+			expectedEnabled: true,
+			expectedOutput:  RecordingOutputFile,
+		},
+		{
+			name: "file output with date template path",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "file",
+				"terminal.session.recording.path":    "/recordings/{{.Year}}/{{.Month}}/{{.Day}}",
+			},
+			expectedEnabled: true,
+			expectedOutput:  RecordingOutputFile,
+		},
+		{
+			name: "file output with empty path disables recording",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "file",
+			},
+			expectedEnabled: false,
+			expectedOutput:  RecordingOutputFile,
+		},
+		{
+			name: "file output with invalid path template disables recording",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "file",
+				"terminal.session.recording.path":    "/recordings/{{.Year",
+			},
+			expectedEnabled: false,
+			expectedOutput:  RecordingOutputFile,
+		},
+		{
+			name: "file output with relative path disables recording",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "file",
+				"terminal.session.recording.path":    "recordings",
+			},
+			expectedEnabled: false,
+			expectedOutput:  RecordingOutputFile,
+		},
+		{
+			name: "unrecognized output disables recording",
+			data: map[string]string{
+				"terminal.session.recording.enabled": "true",
+				"terminal.session.recording.output":  "s3",
+			},
+			expectedEnabled: false,
+			expectedOutput:  "s3",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, settingsManager := fixtures(t.Context(), tt.data, func(secret *corev1.Secret) {
+				secret.Data["server.secretkey"] = nil
+			})
+			settings, err := settingsManager.GetSettings()
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedEnabled, settings.TerminalSessionRecordingEnabled)
+			assert.Equal(t, tt.expectedOutput, settings.TerminalSessionRecordingOutput)
+		})
+	}
+}

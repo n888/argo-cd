@@ -89,20 +89,12 @@ func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		})
 		switch terminalOpts.RecordingOutput {
 		case settings.RecordingOutputFile:
-			timestamp := startTime.Format("20060102-150405.000")
-			// Build the basename from the session identifiers, then sanitize the whole thing:
-			// ":" and "/" become "_" so no component can inject a path separator and escape
-			// RecordingPath. Sanitizing the basename (not the joined path) keeps the configured
-			// recording directory's own separators intact.
-			sanitizer := strings.NewReplacer(":", "_", "/", "_")
-			basename := sanitizer.Replace(fmt.Sprintf("%s-%s-%s-%s-%s.cast", appRBACName, userName, podName, container, timestamp))
-			filename := filepath.Join(terminalOpts.RecordingPath, basename)
-			f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			f, err := openRecordingFile(terminalOpts.RecordingPath, startTime, appRBACName, userName, podName, container)
 			if err != nil {
-				log.Errorf("failed to open recording file %s, disabling recording for this session: %v", filename, err)
+				logger.Errorf("disabling recording for this session: %v", err)
 			} else {
 				session.recorder = newAsciicastRecorder(startTime, logger, false, f)
-				log.Infof("recording session to %s", filename)
+				logger.Infof("recording session to %s", f.Name())
 			}
 		case settings.RecordingOutputStdout:
 			session.recorder = newAsciicastRecorder(startTime, logger, true, nil)
@@ -110,6 +102,32 @@ func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}
 
 	return session, nil
+}
+
+// openRecordingFile renders the recording path template, creates the resulting directory, and
+// opens the .cast file for this session. Timestamps in both the directory template and the
+// filename use UTC so recordings land in deterministic date directories across replicas.
+func openRecordingFile(pathTemplate string, startTime time.Time, appRBACName, userName, podName, container string) (*os.File, error) {
+	dir, err := settings.RenderTerminalSessionRecordingPath(pathTemplate, startTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render recording path template: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("failed to create recording directory %s: %w", dir, err)
+	}
+	timestamp := startTime.UTC().Format("20060102-150405.000")
+	// Build the basename from the session identifiers, then sanitize the whole thing:
+	// ":" and "/" become "_" so no component can inject a path separator and escape
+	// the recording directory. Sanitizing the basename (not the joined path) keeps the
+	// rendered recording directory's own separators intact.
+	sanitizer := strings.NewReplacer(":", "_", "/", "_")
+	basename := sanitizer.Replace(fmt.Sprintf("%s-%s-%s-%s-%s.cast", appRBACName, userName, podName, container, timestamp))
+	filename := filepath.Join(dir, basename)
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open recording file %s: %w", filename, err)
+	}
+	return f, nil
 }
 
 // Done closes the done channel and flushes/closes the recorder.
