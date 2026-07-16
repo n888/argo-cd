@@ -15,7 +15,7 @@ last-updated: 2026-07-15
 
 # Proposal: Terminal Session Recording for Exec Shells
 
-When someone opens a shell into a pod from the Argo CD UI, record what shows up on screen so the session can be audited and replayed later. Recording never slows down the live terminal, and only container `stdout` is captured, never `stdin`.
+When someone opens a shell into a pod from the Argo CD UI, record what shows up on screen so the session can be audited and replayed later. Recording never slows down the live terminal, and only container `stdout` is captured, `stdin` is not captured by design.
 
 **Related**: [#9918](https://github.com/argoproj/argo-cd/issues/9918), "Web Shell - Terminal log for auditing purposes"
 
@@ -33,12 +33,12 @@ Every UI exec session is recorded in Asciicast v2, the asciinema format: a times
 
 The design follows two rules:
 
-1. Recording never slows the terminal. Recording I/O happens off the hot path. If the recorder can't keep up, frames are dropped and counted, and the shell stays responsive.
+1. Recording never slows the terminal. Recording I/O happens off the hot path. If the recorder can't keep up, frames are dropped and logged, and the shell stays responsive.
 2. Keystrokes are never recorded. Only container `stdout` is captured, never `stdin`. This mitigates the chance of recording secrets but doesn't eliminate it: non-echoed input like `sudo` or database password prompts never appears, but anything echoed to the screen (a password typed into a visible command line, a `cat` of a secret file) is output and will be recorded.
 
 ## How it works
 
-The recorder hooks `terminalSession.Write` in `server/application/websocket.go`, which all pod output passes through on its way to the browser. Resize events are picked up in the `Read` loop. Everything runs inside `argocd-server`.
+Inside `argocd-server` the recorder hooks `terminalSession.Write` in `server/application/websocket.go`, which all pod output passes through on its way to terminal UI. Terminal Resize events are picked up in the `Read` loop.
 
 ```mermaid
 flowchart LR
@@ -62,17 +62,21 @@ flowchart LR
     Mode -->|file| Cast[(".cast file")]
 ```
 
-The solid path is the live terminal: pod output is forwarded to the browser synchronously and never waits on recording. On the dashed path, `Write()` and `Read()` marshal an Asciicast frame on the calling goroutine, keeping timestamps accurate, then attempt a non-blocking enqueue. A session-scoped mutex, held only for an instant, makes the enqueue sequence atomic: the header is emitted exactly once and always first, frames enqueue in timestamp order, and a send on a closed channel can't happen during shutdown. The slow work of writing to disk or the log stream runs in a separate writer goroutine. On teardown, `Close()` flushes buffered frames, bounded by a 5-second timeout so a hung sink can't block session cleanup.
+At a high level:
 
-- The Asciicast header (initial dimensions and start timestamp) is emitted lazily on the first event, falling back to 80x24 until the first resize. `"o"` frames carry output, `"r"` frames carry resizes so replay matches the viewport.
-- The frame channel is bounded at 1024 per session. When it fills (say, a slow NFS sink), frames are dropped and counted rather than blocking, trading recording completeness for terminal responsiveness. Drops are logged (a warning on the first, the total at session end), so an incomplete recording is always detectable.
+- Live output takes the solid path: pod output goes straight to the browser and never waits on recording.
+- Recording takes the dashed path: each output or resize event becomes an Asciicast frame and is queued onto a buffered channel. A background writer drains the channel and does all the disk and log I/O.
+- If the buffer fills up, frames are dropped and logged rather than slowing the terminal.
+- A per-session lock, held only for an instant, keeps recordings well-formed: the header lands first, frames stay in timestamp order, and shutdown can't race an in-flight frame. On teardown the writer gets 5 seconds to flush, so a hung disk can't block session cleanup.
+- The header (terminal size and start time) is written on the first event, defaulting to 80x24 until the first resize. `"o"` frames carry output, `"r"` frames carry resizes so replay matches the viewport.
 
 ## Security
 
 - `stdin` is excluded, so non-echoed secrets (password prompts) never reach the recording. Secrets echoed to the screen are still captured, so treat recordings as sensitive.
 - `.cast` files are created with `0600` permissions, readable only by the `argocd-server` process owner.
-- Recording configuration stays server-side. `/api/v1/settings` exposes only the boolean `terminalSessionRecordingEnabled`, and only to logged-in users.
-- Filenames (`<app>-<user>-<pod>-<container>-<timestamp>.cast`) are sanitized as a whole (`:` and `/` become `_`), so no component (app RBAC name, IdP username) can inject a path separator and escape the recording directory. For example, app `default/guestbook`, user `alice@example.com`, container `main` in pod `guestbook-ui-7d9f8` produces `default_guestbook-alice@example.com-guestbook-ui-7d9f8-main-20260622-210654.123.cast`.
+- Recording config is server-side. `/api/v1/settings` exposes the boolean `terminalSessionRecordingEnabled`, and only to logged-in users.
+- Filenames (`<app>-<user>-<pod>-<container>-<timestamp>.cast`) are sanitized (`:` and `/` become `_`), so no component (app RBAC name, IdP username) can inject a path separator and override the recording directory.
+  - For example, app `default/guestbook`, user `alice@example.com`, container `main` in pod `guestbook-ui-7d9f8` produces `default_guestbook-alice@example.com-guestbook-ui-7d9f8-main-20260622-210654.123.cast`.
 
 ## Configuration (`argocd-cm`)
 
@@ -92,11 +96,7 @@ Configuration is validated at load: an invalid `output`, or `file` mode with an 
 - Recordings land on whichever `argocd-server` replica serves the session. For centralized access, use a ReadWriteMany volume, or `stdout` mode: every frame is logged with `terminal_session_app`, `terminal_session_user`, `terminal_session_pod`, and `terminal_session_container` fields for querying in logging systems.
 - Filenames can collide in the rare case that two sessions with the same app, user, pod, and container start in the same millisecond; `O_APPEND` would then interleave both recordings.
 
-## Potential extra/future features
+## Potential future plans
 
-- A "this session is being recorded" notice in the terminal UI; the auth-gated `terminalSessionRecordingEnabled` API flag already exists for it.
-- Built-in retention or rotation for `file` mode.
-
-## Impact
-
-Off by default. Disabled, the cost is one nil check per write; enabled, timestamping and JSON marshalling. Recordings play in any standard Asciicast v2 player.
+- A "this session is being recorded" notice in the terminal UI; the auth-gated `terminalSessionRecordingEnabled` API flag exists for this
+- Built-in retention for `file` mode
