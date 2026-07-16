@@ -378,16 +378,23 @@ data:
   exec.shells: "bash,sh,powershell,cmd"
 
   # terminal.session.recording.enabled indicates whether terminal recording is enabled. It is disabled by default.
+  # Only pod output (stdout) is recorded, never keystrokes (stdin). This mitigates, but does not eliminate,
+  # the chance of recording secrets: non-echoed input (e.g. sudo or database password prompts) never appears,
+  # but anything echoed to the screen is output and will be recorded. Treat recordings as sensitive.
   terminal.session.recording.enabled: "false"
 
   # terminal.session.recording.output indicates where terminal recording should be saved.
   # Valid values are "stdout" and "file". Default is "stdout".
   terminal.session.recording.output: "stdout"
 
-  # terminal.session.recording.path indicates the path where terminal recordings should be saved.
-  # This is only used when terminal.session.recording.output is set to "file".
+  # terminal.session.recording.path indicates the directory where terminal recordings should be saved.
+  # This is only used when terminal.session.recording.output is set to "file". The path must be absolute.
+  # The path may contain the Go template tokens {{.Year}}, {{.Month}} and {{.Day}} (zero-padded,
+  # rendered in UTC at session start) to partition recordings into dated directories, which are
+  # created automatically. If this ConfigMap is templated through Helm, escape the braces, e.g.
+  # {{ "{{" }}.Year{{ "}}" }}.
   # Filename pattern: <app_name>-<user_name>-<pod_name>-<container_name>-<timestamp>.cast
-  terminal.session.recording.path: "/tmp"
+  terminal.session.recording.path: "/tmp/{{.Year}}/{{.Month}}/{{.Day}}"
 
   # oidc.tls.insecure.skip.verify determines whether certificate verification is skipped when verifying tokens with the
   # configured OIDC provider (either external or the bundled Dex instance). Setting this to "true" will cause JWT
