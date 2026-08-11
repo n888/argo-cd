@@ -625,6 +625,7 @@ export interface AuthSettings {
     uiBannerPosition: string;
     uiLoginButtonText: string;
     execEnabled: boolean;
+    execTerminalRecordingEnabled: boolean;
     appsInAnyNamespaceEnabled: boolean;
     hydratorEnabled: boolean;
     syncWithReplaceAllowed: boolean;

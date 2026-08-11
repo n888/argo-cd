@@ -150,6 +150,11 @@ type ArgoCDSettings struct {
 	MaxPodLogsToRender int64 `json:"maxPodLogsToRender"`
 	// ExecEnabled indicates whether the UI exec feature is enabled
 	ExecEnabled bool `json:"execEnabled"`
+	// ExecTerminalRecordingEnabled indicates whether terminal session recording is enabled
+	ExecTerminalRecordingEnabled bool `json:"execTerminalRecordingEnabled"`
+	// ExecTerminalRecordingEndpoint is the ws:// or wss:// URL of the recording endpoint
+	// that terminal session frames are streamed to (used when recording is enabled)
+	ExecTerminalRecordingEndpoint string `json:"execTerminalRecordingEndpoint"`
 	// ExecShells restricts which shells are allowed for `exec` and in which order they are tried
 	ExecShells []string `json:"execShells"`
 	// TrackingMethod defines the resource tracking method to be used
@@ -551,6 +556,11 @@ const (
 	helmValuesFileSchemesKey = "helm.valuesFileSchemes"
 	// execEnabledKey is the key to configure whether the UI exec feature is enabled
 	execEnabledKey = "exec.enabled"
+	// execTerminalRecordingEnabledKey is the key to configure whether terminal session recording is enabled
+	execTerminalRecordingEnabledKey = "exec.terminal.recording.enabled"
+	// execTerminalRecordingEndpointKey is the key to configure the recording endpoint URL that
+	// terminal session frames are streamed to (used when recording is enabled)
+	execTerminalRecordingEndpointKey = "exec.terminal.recording.endpoint"
 	// execShellsKey is the key to configure which shells are allowed for `exec` and in what order they are tried
 	execShellsKey = "exec.shells"
 	// oidcTLSInsecureSkipVerifyKey is the key to configure whether TLS cert verification is skipped for OIDC connections
@@ -1721,6 +1731,14 @@ func updateSettingsFromConfigMap(settings *ArgoCDSettings, argoCDCM *corev1.Conf
 		}
 	}
 	settings.ExecEnabled = argoCDCM.Data[execEnabledKey] == "true"
+	settings.ExecTerminalRecordingEnabled = argoCDCM.Data[execTerminalRecordingEnabledKey] == "true"
+	settings.ExecTerminalRecordingEndpoint = argoCDCM.Data[execTerminalRecordingEndpointKey]
+	if settings.ExecTerminalRecordingEnabled {
+		if err := validateExecTerminalRecordingEndpoint(settings.ExecTerminalRecordingEndpoint); err != nil {
+			log.Warnf("%s is invalid: %v - terminal session recording will be disabled", execTerminalRecordingEndpointKey, err)
+			settings.ExecTerminalRecordingEnabled = false
+		}
+	}
 	execShells := argoCDCM.Data[execShellsKey]
 	if execShells != "" {
 		settings.ExecShells = strings.Split(execShells, ",")
@@ -1733,6 +1751,28 @@ func updateSettingsFromConfigMap(settings *ArgoCDSettings, argoCDCM *corev1.Conf
 	settings.ExtensionConfig = getExtensionConfigs(argoCDCM.Data)
 	settings.ImpersonationEnabled = argoCDCM.Data[impersonationEnabledKey] == "true"
 	settings.RequireOverridePrivilegeForRevisionSync = argoCDCM.Data[requireOverridePrivilegeForRevisionSyncKey] == "true"
+}
+
+// validateExecTerminalRecordingEndpoint checks the endpoint is a ws:// or wss:// base URL.
+// A query string is rejected because the producer overwrites it with session identity.
+func validateExecTerminalRecordingEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return fmt.Errorf("%s must be set when recording is enabled", execTerminalRecordingEndpointKey)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to parse %s: %w", execTerminalRecordingEndpointKey, err)
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return fmt.Errorf("%s must use scheme ws or wss, got %q", execTerminalRecordingEndpointKey, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s is missing a host", execTerminalRecordingEndpointKey)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s must not contain a query string or fragment", execTerminalRecordingEndpointKey)
+	}
+	return nil
 }
 
 func getExtensionConfigs(cmData map[string]string) map[string]string {

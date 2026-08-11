@@ -12,6 +12,7 @@ import (
 	httputil "github.com/argoproj/argo-cd/v3/util/http"
 	"github.com/argoproj/argo-cd/v3/util/rbac"
 	util_session "github.com/argoproj/argo-cd/v3/util/session"
+	"github.com/argoproj/argo-cd/v3/util/terminalrecording"
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
@@ -44,6 +45,7 @@ type terminalSession struct {
 	token          *string
 	appRBACName    string
 	terminalOpts   *TerminalOptions
+	recorder       *sessionRecorder
 }
 
 // getToken get auth token from web socket request
@@ -53,7 +55,7 @@ func getToken(r *http.Request) (string, error) {
 }
 
 // newTerminalSession create terminalSession
-func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Request, responseHeader http.Header, sessionManager *util_session.SessionManager, appRBACName string, terminalOpts *TerminalOptions) (*terminalSession, error) {
+func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Request, responseHeader http.Header, sessionManager *util_session.SessionManager, appRBACName string, sessionMeta terminalrecording.Session, terminalOpts *TerminalOptions) (*terminalSession, error) {
 	token, err := getToken(r)
 	if err != nil {
 		return nil, err
@@ -73,11 +75,23 @@ func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		appRBACName:    appRBACName,
 		terminalOpts:   terminalOpts,
 	}
+	if terminalOpts.RecordingEnabled {
+		recorder, err := startSessionRecorder(sessionMeta, terminalOpts.RecordingEndpoint)
+		if err != nil {
+			// Recording problems never block the shell: the session proceeds unrecorded.
+			log.Errorf("terminal session recording disabled for this session: %v", err)
+		} else {
+			session.recorder = recorder
+		}
+	}
 	return session, nil
 }
 
-// Done close the done channel.
+// Done closes the done channel and flushes the session recorder.
 func (t *terminalSession) Done() {
+	if t.recorder != nil {
+		t.recorder.Close()
+	}
 	close(t.doneChan)
 }
 
@@ -204,6 +218,9 @@ func (t *terminalSession) Read(p []byte) (int, error) {
 		return copy(p, msg.Data), nil
 	case "resize":
 		t.sizeChan <- remotecommand.TerminalSize{Width: msg.Cols, Height: msg.Rows}
+		if t.recorder != nil {
+			t.recorder.recordResize(msg.Cols, msg.Rows)
+		}
 		return 0, nil
 	default:
 		return copy(p, EndOfTransmission), fmt.Errorf("unknown message type %s", msg.Operation)
@@ -223,9 +240,13 @@ func (t *terminalSession) Ping() error {
 
 // Write called from remote command whenever there is any output
 func (t *terminalSession) Write(p []byte) (int, error) {
+	data := string(p)
+	if t.recorder != nil {
+		t.recorder.recordOutput(data)
+	}
 	msg, err := json.Marshal(TerminalMessage{
 		Operation: "stdout",
-		Data:      string(p),
+		Data:      data,
 	})
 	if err != nil {
 		log.Errorf("write parse message err: %v", err)

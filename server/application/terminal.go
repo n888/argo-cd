@@ -27,6 +27,7 @@ import (
 	"github.com/argoproj/argo-cd/v3/util/security"
 	util_session "github.com/argoproj/argo-cd/v3/util/session"
 	"github.com/argoproj/argo-cd/v3/util/settings"
+	"github.com/argoproj/argo-cd/v3/util/terminalrecording"
 )
 
 type terminalHandler struct {
@@ -41,8 +42,10 @@ type terminalHandler struct {
 }
 
 type TerminalOptions struct {
-	DisableAuth bool
-	Enf         *rbac.Enforcer
+	DisableAuth       bool
+	Enf               *rbac.Enforcer
+	RecordingEnabled  bool
+	RecordingEndpoint string
 }
 
 // NewHandler returns a new terminal handler.
@@ -59,16 +62,22 @@ func NewHandler(appLister applisters.ApplicationLister, namespace string, enable
 	}
 }
 
-func (s *terminalHandler) getApplicationClusterRawConfig(ctx context.Context, a *appv1.Application) (*rest.Config, error) {
+// getApplicationClusterRawConfig resolves the app's destination cluster and returns its raw
+// REST config plus a display name (cluster name, else API server URL) for recording metadata.
+func (s *terminalHandler) getApplicationClusterRawConfig(ctx context.Context, a *appv1.Application) (*rest.Config, string, error) {
 	destCluster, err := argo.GetDestinationCluster(ctx, a.Spec.Destination, s.db)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	rawConfig, err := destCluster.RawRestConfig()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return rawConfig, nil
+	clusterName := destCluster.Name
+	if clusterName == "" {
+		clusterName = destCluster.Server
+	}
+	return rawConfig, clusterName, nil
 }
 
 type GetSettingsFunc func() (*settings.ArgoCDSettings, error)
@@ -179,7 +188,7 @@ func (s *terminalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config, err := s.getApplicationClusterRawConfig(ctx, a)
+	config, clusterName, err := s.getApplicationClusterRawConfig(ctx, a)
 	if err != nil {
 		http.Error(w, "Cannot get raw cluster config", http.StatusBadRequest)
 		return
@@ -218,7 +227,15 @@ func (s *terminalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	fieldLog.Info("terminal session starting")
 
-	session, err := newTerminalSession(ctx, w, r, nil, s.sessionManager, appRBACName, s.terminalOptions)
+	sessionMeta := terminalrecording.Session{
+		App:       appRBACName,
+		User:      util_session.Username(ctx),
+		Cluster:   clusterName,
+		Namespace: namespace,
+		Pod:       podName,
+		Container: container,
+	}
+	session, err := newTerminalSession(ctx, w, r, nil, s.sessionManager, appRBACName, sessionMeta, s.terminalOptions)
 	if err != nil {
 		http.Error(w, "Failed to start terminal session", http.StatusBadRequest)
 		return

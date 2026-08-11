@@ -48,6 +48,7 @@ message Settings {
     bool hydratorEnabled = 28;
     bool syncWithReplaceAllowed = 29;
     string uiLoginButtonText = 30;
+    bool execTerminalRecordingEnabled = 31;
 }
 
 message GoogleAnalyticsConfig {

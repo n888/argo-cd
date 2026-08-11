@@ -127,6 +127,7 @@ func (s *Server) Get(ctx context.Context, _ *settingspkg.SettingsQuery) (*settin
 	}
 
 	if sessionmgr.LoggedIn(ctx) || s.disableAuth {
+		set.ExecTerminalRecordingEnabled = argoCDSettings.ExecTerminalRecordingEnabled
 		set.UiBannerContent = argoCDSettings.UiBannerContent
 		set.UiBannerURL = argoCDSettings.UiBannerURL
 		set.UiBannerPermanent = argoCDSettings.UiBannerPermanent

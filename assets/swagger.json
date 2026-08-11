@@ -5720,6 +5720,9 @@
         "execEnabled": {
           "type": "boolean"
         },
+        "execTerminalRecordingEnabled": {
+          "type": "boolean"
+        },
         "googleAnalytics": {
           "$ref": "#/definitions/clusterGoogleAnalyticsConfig"
         },
