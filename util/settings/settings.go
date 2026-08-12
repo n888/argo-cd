@@ -158,8 +158,8 @@ type ArgoCDSettings struct {
 	ExecEnabled bool `json:"execEnabled"`
 	// ExecTerminalRecordingEnabled indicates whether terminal session recording is enabled
 	ExecTerminalRecordingEnabled bool `json:"execTerminalRecordingEnabled"`
-	// ExecTerminalRecordingEndpoint is the ws:// or wss:// URL of the recording endpoint
-	// that terminal session frames are streamed to (used when recording is enabled)
+	// ExecTerminalRecordingEndpoint is the ws:// or wss:// URL terminal session frames
+	// are streamed to when recording is enabled
 	ExecTerminalRecordingEndpoint string `json:"execTerminalRecordingEndpoint"`
 	// ExecShells restricts which shells are allowed for `exec` and in which order they are tried
 	ExecShells []string `json:"execShells"`
@@ -570,8 +570,7 @@ const (
 	execEnabledKey = "exec.enabled"
 	// execTerminalRecordingEnabledKey is the key to configure whether terminal session recording is enabled
 	execTerminalRecordingEnabledKey = "exec.terminal.recording.enabled"
-	// execTerminalRecordingEndpointKey is the key to configure the recording endpoint URL that
-	// terminal session frames are streamed to (used when recording is enabled)
+	// execTerminalRecordingEndpointKey is the key to configure the terminal session recording endpoint URL
 	execTerminalRecordingEndpointKey = "exec.terminal.recording.endpoint"
 	// execShellsKey is the key to configure which shells are allowed for `exec` and in what order they are tried
 	execShellsKey = "exec.shells"

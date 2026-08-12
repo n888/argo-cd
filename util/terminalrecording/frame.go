@@ -1,15 +1,15 @@
-// Package terminalrecording defines the wire protocol for streaming terminal
+// Package terminalrecording is the wire protocol for streaming terminal
 // session recordings from argocd-server to a recording endpoint.
 //
 // Session identity is sent once per connection, in the dial URL query
-// parameters (Session). Frames carry a seq/ts envelope plus the stdout and
-// resize payloads of the terminal UI protocol; stdin is never sent.
+// parameters (see Session). Frames wrap the stdout and resize payloads of the
+// terminal UI protocol in a seq/ts envelope. Stdin is never sent.
 //
-// One connection carries one contiguous fragment of a recording; on
-// connection loss the producer redials and the next fragment begins. Seqs are
-// per session and only assigned to frames that enter the pipeline, so a seq
-// gap between fragments measures transit loss, while source drops are counted
-// in the end frame.
+// A connection carries one contiguous fragment of a recording. When it drops,
+// the producer redials and the next fragment starts. Seqs are per session and
+// only assigned to frames that actually entered the pipeline, so a seq gap
+// between fragments means loss in transit, while drops at the source are
+// counted in the end frame.
 package terminalrecording
 
 import (
@@ -18,25 +18,26 @@ import (
 	"fmt"
 )
 
-// Frame operations. Stdout and resize match the operation names of the
-// terminal UI's TerminalMessage protocol; end exists only on the recording
-// wire.
+// Frame operations. Stdout and resize keep the operation names of the terminal
+// UI's TerminalMessage protocol. The end operation only exists on the
+// recording wire.
 const (
 	OperationStdout = "stdout"
 	OperationResize = "resize"
 	OperationEnd    = "end"
 )
 
-// Frame is one recording event on the wire. Operation determines which fields
-// beyond Seq and Ts are set. Session identity is carried by the connection,
-// not repeated per frame (see Session).
+// Frame is one recording event on the wire. Operation decides which fields
+// beyond Seq and Ts are set. Session identity is carried by the connection
+// rather than repeated on every frame (see Session).
 type Frame struct {
 	Operation string `json:"operation"`
 	// Seq numbers frames per session in enqueue order, continuing across
 	// reconnects.
 	Seq uint64 `json:"seq"`
-	// Ts is seconds since session start, the Asciicast v2 time base. Absolute
-	// offsets keep later timing intact when a frame is lost.
+	// Ts is seconds since session start, which is the Asciicast v2 time base.
+	// Offsets being absolute, a lost frame doesn't shift the timing of
+	// anything after it.
 	Ts float64 `json:"ts"`
 
 	// Data carries one chunk of terminal output on stdout frames.
@@ -46,8 +47,8 @@ type Frame struct {
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
 
-	// Dropped, on end frames, counts frames dropped at the source over the
-	// whole session (buffer full). A pointer so end frames serialize
+	// Dropped is set on end frames: how many frames the source dropped over
+	// the whole session (buffer full). It's a pointer so end frames serialize
 	// "dropped":0 while other operations omit the key.
 	Dropped *int64 `json:"dropped,omitempty"`
 }
@@ -74,7 +75,7 @@ func NewResizeFrame(seq uint64, ts float64, cols, rows uint16) Frame {
 }
 
 // NewEndFrame builds the frame that closes a session. seq is one past the
-// last data frame's seq; dropped is the session's source-drop count.
+// last data frame's seq, and dropped is the session's source-drop count.
 func NewEndFrame(seq uint64, ts float64, dropped int64) Frame {
 	return Frame{
 		Operation: OperationEnd,
@@ -96,15 +97,15 @@ func ParseFrame(data []byte) (Frame, error) {
 	return f, nil
 }
 
-// Validate checks single-frame invariants. Cross-frame ordering (seq
-// continuity, ts monotonicity) is the receiver's concern.
+// Validate checks what can be checked on a single frame. Ordering across
+// frames (seq continuity, ts monotonicity) is the receiver's problem.
 func (f Frame) Validate() error {
 	if f.Ts < 0 {
 		return fmt.Errorf("recording frame has negative ts %v", f.Ts)
 	}
 	switch f.Operation {
 	case OperationStdout:
-		// Empty data is allowed; it replays as an empty output event.
+		// empty data is fine - it replays as an empty output event
 	case OperationResize:
 		if f.Cols == 0 || f.Rows == 0 {
 			return fmt.Errorf("resize frame has invalid dimensions %dx%d", f.Cols, f.Rows)

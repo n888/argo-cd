@@ -26,20 +26,16 @@ const (
 	// Backoff for redials: failed dials, and connections that keep dying young.
 	recorderRedialInitialBackoff = time.Second
 	recorderRedialMaxBackoff     = 30 * time.Second
-	// A connection that lived this long was healthy, so redial immediately when
-	// it drops. Anything younger looks like an endpoint that accepts dials but
-	// can't hold a connection (say, its sink can't write); back off instead of
-	// churning a connection per frame.
+	// Redial immediately when a connection at least this old drops; back off for
+	// younger ones so a broken endpoint isn't churned one connection per frame.
 	recorderHealthyConnAge = 30 * time.Second
 )
 
-// sessionRecorder streams one terminal session's recording frames to the recording
-// endpoint. Producers (Write and the resize path of Read) enqueue frames onto a bounded
-// channel under a mutex; the egress goroutine owns all network I/O, so a slow endpoint
-// never blocks the terminal. A brief lock keeps the two producers and Close serialized,
-// so seq and timestamp order match enqueue order. On connection loss the egress redials
-// and continues as a new fragment; seqs continue across fragments, so in-flight loss
-// surfaces as a seq gap.
+// sessionRecorder streams a session's frames to the recording endpoint. Producers
+// (Write, and resizes from Read) enqueue onto a bounded channel under a mutex; the
+// egress goroutine owns all network I/O, so a slow endpoint never blocks the terminal.
+// On connection loss it redials and carries on as a new fragment, keeping seqs
+// continuous across fragments.
 type sessionRecorder struct {
 	dialURL   string
 	logger    *log.Entry
@@ -50,8 +46,8 @@ type sessionRecorder struct {
 	stop   chan struct{} // closed by Close to abort dial and redial backoff waits
 
 	// Egress-goroutine state: touched only by run/deliver/connect, so unlocked.
-	connectedAt time.Time     // when the current connection was established
-	redialWait  time.Duration // backoff before the next redial; 0 means redial immediately
+	connectedAt time.Time
+	redialWait  time.Duration // 0 means redial immediately
 
 	mu       sync.Mutex
 	closed   bool
@@ -60,8 +56,7 @@ type sessionRecorder struct {
 	endFrame terminalrecording.Frame // set by Close before frames is closed; read by egress after drain
 }
 
-// startSessionRecorder mints meta's ID and StartTime, builds the dial URL, and starts a
-// recorder.
+// startSessionRecorder mints meta's ID and StartTime and builds the dial URL.
 func startSessionRecorder(meta terminalrecording.Session, endpoint string) (*sessionRecorder, error) {
 	id, err := terminalrecording.NewSessionID()
 	if err != nil {
@@ -132,8 +127,8 @@ func (r *sessionRecorder) recordResize(cols, rows uint16) {
 	r.enqueueLocked(terminalrecording.NewResizeFrame(r.nextSeq, ts, cols, rows))
 }
 
-// enqueueLocked hands a frame to the egress goroutine without blocking: when the buffer is
-// full the frame is dropped and counted, and its seq is not consumed. Callers must hold r.mu.
+// enqueueLocked never blocks: a full buffer drops and counts the frame without consuming
+// its seq. Callers must hold r.mu.
 func (r *sessionRecorder) enqueueLocked(f terminalrecording.Frame) {
 	select {
 	case r.frames <- f:
@@ -171,8 +166,7 @@ func (r *sessionRecorder) Close() {
 	}
 }
 
-// run is the egress goroutine: it drains the buffer onto the endpoint connection and
-// delivers the end frame after the buffer is sealed.
+// run is the egress goroutine: drain the buffer, then send the end frame.
 func (r *sessionRecorder) run() {
 	defer close(r.done)
 	var conn *websocket.Conn
@@ -233,9 +227,8 @@ func (r *sessionRecorder) deliver(conn *websocket.Conn, f terminalrecording.Fram
 	}
 }
 
-// pauseBeforeRedial waits out the redial backoff after a connection died young, doubling
-// it up to recorderRedialMaxBackoff for the next such loss. It returns false when the
-// recorder starts stopping during the wait.
+// pauseBeforeRedial waits out the redial backoff, doubling it for next time. Returns
+// false if the recorder starts stopping during the wait.
 func (r *sessionRecorder) pauseBeforeRedial() bool {
 	if r.redialWait == 0 {
 		r.redialWait = recorderRedialInitialBackoff

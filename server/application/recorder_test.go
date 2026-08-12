@@ -38,9 +38,8 @@ func testSessionMeta() terminalrecording.Session {
 	}
 }
 
-// mockRecordingEndpoint is an in-process recording endpoint: it accepts WebSocket
-// connections, parses the session query, and collects the frames of each connection
-// (fragment) in accept order.
+// mockRecordingEndpoint is an in-process recording endpoint collecting each
+// connection's frames in accept order.
 type mockRecordingEndpoint struct {
 	t      *testing.T
 	server *httptest.Server
@@ -129,9 +128,8 @@ func (m *mockRecordingEndpoint) snapshotSessions() []terminalrecording.Session {
 	return append([]terminalrecording.Session(nil), m.sessions...)
 }
 
-// assertWellFormed checks the cross-frame invariants the producer guarantees: within a
-// fragment seqs are consecutive, across fragments seqs are strictly increasing, and ts is
-// non-decreasing in enqueue order.
+// assertWellFormed checks the producer's invariants: consecutive seqs within a fragment,
+// increasing seqs across fragments, non-decreasing ts.
 func assertWellFormed(t *testing.T, fragments [][]terminalrecording.Frame) {
 	t.Helper()
 	prevSeq := -1
@@ -247,9 +245,8 @@ func TestSessionRecorderUnreachableEndpointNeverBlocks(t *testing.T) {
 
 func TestSessionRecorderPacesRedialsWhenConnectionsDieYoung(t *testing.T) {
 	t.Parallel()
-	// An endpoint that accepts every dial but immediately drops the connection, like one
-	// whose sink persistently fails: without redial pacing the producer would churn a
-	// connection per frame at round-trip speed.
+	// An endpoint that accepts every dial but immediately drops the connection,
+	// like one whose sink persistently fails.
 	var mu sync.Mutex
 	dials := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

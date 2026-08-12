@@ -10,15 +10,16 @@ import (
 	"github.com/argoproj/argo-cd/v3/util/rand"
 )
 
-// sessionIDLength is the hex length of a session identifier: 64 random bits,
-// collision-safe at realistic session volumes, short enough for filenames.
+// sessionIDLength is the hex length of a session ID. 64 random bits makes
+// collisions a non-issue at any realistic session volume while keeping
+// filenames short.
 const sessionIDLength = 16
 
-// maxSessionIDLength bounds identifiers accepted from the wire; the endpoint
-// embeds them in filenames and log fields.
+// maxSessionIDLength bounds IDs accepted from the wire, since they end up in
+// filenames and log fields.
 const maxSessionIDLength = 64
 
-// UserAnonymous stands in for an anonymous session with a missing user field.
+// UserAnonymous is recorded when a session arrives with no user field.
 const UserAnonymous = "anonymous"
 
 // Dial URL query parameter names, shared by producer and endpoint.
@@ -34,15 +35,16 @@ const (
 )
 
 // Session identifies one recorded exec session. It is sent once per
-// connection, in the dial URL query parameters; frames inherit it from their
-// connection. Cluster and Namespace locate the pod, which the app name alone
-// does not determine.
+// connection in the dial URL query parameters, and every frame on the
+// connection inherits it. Cluster and Namespace are included because the app
+// name alone doesn't pin down which pod was execed into.
 type Session struct {
-	// ID is minted by the producer with NewSessionID and shared by all
+	// ID comes from NewSessionID at the producer and is shared by all
 	// fragments of one session.
 	ID string
-	// StartTime plus a frame's Ts is its wall-clock time regardless of
-	// delivery delay. Carried as unix seconds; sub-second precision is lost.
+	// StartTime plus a frame's Ts gives the frame's wall-clock time no matter
+	// how late it's delivered. Carried as unix seconds, so sub-second
+	// precision is lost.
 	StartTime time.Time
 	App       string
 	User      string
@@ -52,8 +54,8 @@ type Session struct {
 	Container string
 }
 
-// NewSessionID returns a cryptographically random session identifier. It must
-// not be guessable: a future resume feature would treat it as a bearer key.
+// NewSessionID returns a cryptographically random session ID. Keep it
+// unguessable - a future resume feature would treat the ID as a bearer key.
 func NewSessionID() (string, error) {
 	id, err := rand.RandHex(sessionIDLength)
 	if err != nil {
@@ -76,9 +78,9 @@ func (s Session) Query() url.Values {
 	return q
 }
 
-// ParseSessionQuery decodes the dial URL query parameters of a recording
-// connection. A missing user becomes UserAnonymous; other metadata fields may
-// be empty and must be sanitized before filesystem use. Unknown parameters are
+// ParseSessionQuery decodes the query parameters of a recording connection. A
+// missing user becomes UserAnonymous. The other metadata fields can be empty
+// and need sanitizing before any filesystem use. Unknown parameters are
 // ignored.
 func ParseSessionQuery(q url.Values) (Session, error) {
 	id := q.Get(queryParamSessionID)
