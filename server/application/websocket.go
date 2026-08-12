@@ -100,7 +100,7 @@ func newTerminalSession(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	if terminalOpts.RecordingEnabled {
 		recorder, err := startSessionRecorder(sessionMeta, terminalOpts.RecordingEndpoint)
 		if err != nil {
-			// Recording problems never block the shell: the session proceeds unrecorded.
+			// Recording is best-effort: on error the session proceeds unrecorded.
 			log.Errorf("terminal session recording disabled for this session: %v", err)
 		} else {
 			session.recorder = recorder

@@ -14,38 +14,32 @@ import (
 )
 
 const (
-	// recorderFrameBufferSize bounds frames queued for the egress goroutine. When full,
-	// frames are dropped rather than blocking, so a slow or unreachable recording endpoint
-	// cannot stall the interactive terminal.
+	// Frames buffered for the egress goroutine. When the buffer is full we drop
+	// rather than block the terminal.
 	recorderFrameBufferSize = 1024
-	// recorderFlushTimeout bounds how long session teardown waits for the egress goroutine
-	// to flush, so an unreachable endpoint cannot wedge session cleanup.
+	// How long teardown waits for the egress goroutine to flush.
 	recorderFlushTimeout = 5 * time.Second
-	// recorderDialTimeout bounds a single dial attempt.
-	recorderDialTimeout = 2 * time.Second
-	// recorderWriteTimeout bounds a single frame write, so a hung endpoint surfaces as a
-	// write error and a redial instead of blocking the egress goroutine.
+	recorderDialTimeout  = 2 * time.Second
+	// A hung endpoint should turn into a write error and a redial, not a stuck
+	// egress goroutine.
 	recorderWriteTimeout = 10 * time.Second
-	// recorderRedialInitialBackoff and recorderRedialMaxBackoff pace redials, both when
-	// dials fail and when established connections keep dying young. Producers are never
-	// paced by this: they keep filling the buffer and then drop.
+	// Backoff for redials: failed dials, and connections that keep dying young.
 	recorderRedialInitialBackoff = time.Second
 	recorderRedialMaxBackoff     = 30 * time.Second
-	// recorderHealthyConnAge is how long a connection must live for its loss to be treated
-	// as an isolated failure, redialed immediately. Connections dying younger indicate an
-	// endpoint that accepts dials but cannot keep a connection (e.g. its sink cannot
-	// write), so those redials wait out the backoff; without that pacing, dial succeeding
-	// instantly means the producer would churn a connection per frame at round-trip speed.
+	// A connection that lived this long was healthy, so redial immediately when
+	// it drops. Anything younger looks like an endpoint that accepts dials but
+	// can't hold a connection (say, its sink can't write); back off instead of
+	// churning a connection per frame.
 	recorderHealthyConnAge = 30 * time.Second
 )
 
 // sessionRecorder streams one terminal session's recording frames to the recording
 // endpoint. Producers (Write and the resize path of Read) enqueue frames onto a bounded
 // channel under a mutex; the egress goroutine owns all network I/O, so a slow endpoint
-// never blocks the terminal. The mutex makes check-closed/assign-seq/stamp-ts/send atomic,
-// serializing the producers against each other and against Close, and making enqueue order
-// equal seq and timestamp order. On connection loss the egress redials and continues as a
-// new fragment; seqs continue across fragments, so in-flight loss surfaces as a seq gap.
+// never blocks the terminal. A brief lock keeps the two producers and Close serialized,
+// so seq and timestamp order match enqueue order. On connection loss the egress redials
+// and continues as a new fragment; seqs continue across fragments, so in-flight loss
+// surfaces as a seq gap.
 type sessionRecorder struct {
 	dialURL   string
 	logger    *log.Entry
@@ -93,7 +87,6 @@ func startSessionRecorder(meta terminalrecording.Session, endpoint string) (*ses
 	return r, nil
 }
 
-// recordingDialURL combines the endpoint base URL with the session's query parameters.
 func recordingDialURL(endpoint string, session terminalrecording.Session) (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -103,7 +96,7 @@ func recordingDialURL(endpoint string, session terminalrecording.Session) (strin
 	return u.String(), nil
 }
 
-// newSessionRecorder builds a recorder and starts its egress goroutine.
+// newSessionRecorder also starts the egress goroutine.
 func newSessionRecorder(dialURL string, startTime time.Time, logger *log.Entry) *sessionRecorder {
 	r := &sessionRecorder{
 		dialURL:   dialURL,
@@ -117,7 +110,6 @@ func newSessionRecorder(dialURL string, startTime time.Time, logger *log.Entry) 
 	return r
 }
 
-// recordOutput enqueues a terminal output frame.
 func (r *sessionRecorder) recordOutput(data string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -129,7 +121,6 @@ func (r *sessionRecorder) recordOutput(data string) {
 	r.enqueueLocked(terminalrecording.NewStdoutFrame(r.nextSeq, ts, data))
 }
 
-// recordResize enqueues a terminal resize frame.
 func (r *sessionRecorder) recordResize(cols, rows uint16) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -216,9 +207,7 @@ func (r *sessionRecorder) run() {
 
 // deliver writes one frame, redialing as needed, and returns the connection it succeeded
 // on. A failed write is retried on the next connection so the frame's seq is not lost.
-// Redials are immediate after a healthy connection is lost, but paced by capped backoff
-// while connections keep dying young. It returns nil only when the recorder is stopping
-// before the frame could be delivered.
+// Returns nil only if the recorder starts stopping first.
 func (r *sessionRecorder) deliver(conn *websocket.Conn, f terminalrecording.Frame) *websocket.Conn {
 	for {
 		if conn == nil {

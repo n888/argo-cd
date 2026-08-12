@@ -63,7 +63,7 @@ func NewHandler(appLister applisters.ApplicationLister, namespace string, enable
 }
 
 // getApplicationClusterRawConfig resolves the app's destination cluster and returns its raw
-// REST config plus a display name (cluster name, else API server URL) for recording metadata.
+// REST config plus a display name for recording metadata.
 func (s *terminalHandler) getApplicationClusterRawConfig(ctx context.Context, a *appv1.Application) (*rest.Config, string, error) {
 	destCluster, err := argo.GetDestinationCluster(ctx, a.Spec.Destination, s.db)
 	if err != nil {
