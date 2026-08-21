@@ -17,7 +17,7 @@ const (
 	// Frames buffered for the egress goroutine. When the buffer is full we drop
 	// rather than block the terminal.
 	recorderFrameBufferSize = 1024
-	// How long teardown waits for the egress goroutine to flush.
+	// How long teardown waits for the egress goroutine to flush before abandoning it.
 	recorderFlushTimeout = 5 * time.Second
 	recorderDialTimeout  = 2 * time.Second
 	// A hung endpoint should turn into a write error and a redial, not a stuck
@@ -41,9 +41,9 @@ type sessionRecorder struct {
 	logger    *log.Entry
 	startTime time.Time
 
-	frames chan terminalrecording.Frame
-	done   chan struct{} // closed by the egress goroutine after its final flush attempt
-	stop   chan struct{} // closed by Close to abort dial and redial backoff waits
+	frames  chan terminalrecording.Frame
+	done    chan struct{} // closed by the egress goroutine after its final flush attempt
+	abandon chan struct{} // closed by Close when the flush window expires; egress quits promptly
 
 	// Egress-goroutine state: touched only by run/deliver/connect, so unlocked.
 	connectedAt time.Time
@@ -99,7 +99,7 @@ func newSessionRecorder(dialURL string, startTime time.Time, logger *log.Entry) 
 		startTime: startTime,
 		frames:    make(chan terminalrecording.Frame, recorderFrameBufferSize),
 		done:      make(chan struct{}),
-		stop:      make(chan struct{}),
+		abandon:   make(chan struct{}),
 	}
 	go r.run()
 	return r
@@ -141,8 +141,10 @@ func (r *sessionRecorder) enqueueLocked(f terminalrecording.Frame) {
 	}
 }
 
-// Close seals the frame stream with an end frame, then waits up to recorderFlushTimeout
-// for the egress goroutine to deliver what it can.
+// Close seals the frame stream with an end frame and gives the egress goroutine
+// recorderFlushTimeout to deliver what it can, dial retries included, so an endpoint
+// blip at teardown doesn't cost the tail. When the window expires the egress is
+// abandoned and exits within one bounded operation.
 func (r *sessionRecorder) Close() {
 	r.mu.Lock()
 	if r.closed {
@@ -154,13 +156,13 @@ func (r *sessionRecorder) Close() {
 	dropped := r.dropped
 	close(r.frames) // safe under r.mu: producers check r.closed under the same lock before sending
 	r.mu.Unlock()
-	close(r.stop)
 
 	select {
 	case <-r.done:
 	case <-time.After(recorderFlushTimeout):
 		r.logger.Warnf("recording flush timed out after %s; the recording tail may be missing", recorderFlushTimeout)
 	}
+	close(r.abandon)
 	if dropped > 0 {
 		r.logger.Warnf("recording dropped %d frame(s) due to a slow or unreachable recording endpoint; recording is incomplete", dropped)
 	}
@@ -201,9 +203,12 @@ func (r *sessionRecorder) run() {
 
 // deliver writes one frame, redialing as needed, and returns the connection it succeeded
 // on. A failed write is retried on the next connection so the frame's seq is not lost.
-// Returns nil only if the recorder starts stopping first.
+// Returns nil only if the flush window expires first.
 func (r *sessionRecorder) deliver(conn *websocket.Conn, f terminalrecording.Frame) *websocket.Conn {
 	for {
+		if r.abandoned() {
+			return nil
+		}
 		if conn == nil {
 			conn = r.connect()
 			if conn == nil {
@@ -228,13 +233,13 @@ func (r *sessionRecorder) deliver(conn *websocket.Conn, f terminalrecording.Fram
 }
 
 // pauseBeforeRedial waits out the redial backoff, doubling it for next time. Returns
-// false if the recorder starts stopping during the wait.
+// false if the flush window expires during the wait.
 func (r *sessionRecorder) pauseBeforeRedial() bool {
 	if r.redialWait == 0 {
 		r.redialWait = recorderRedialInitialBackoff
 	}
 	select {
-	case <-r.stop:
+	case <-r.abandon:
 		return false
 	case <-time.After(r.redialWait):
 	}
@@ -242,8 +247,18 @@ func (r *sessionRecorder) pauseBeforeRedial() bool {
 	return true
 }
 
+// abandoned reports whether Close's flush window has expired.
+func (r *sessionRecorder) abandoned() bool {
+	select {
+	case <-r.abandon:
+		return true
+	default:
+		return false
+	}
+}
+
 // connect dials the recording endpoint with capped exponential backoff until it succeeds
-// or the recorder is stopping.
+// or the flush window expires.
 func (r *sessionRecorder) connect() *websocket.Conn {
 	dialer := websocket.Dialer{HandshakeTimeout: recorderDialTimeout}
 	backoff := recorderRedialInitialBackoff
@@ -261,7 +276,7 @@ func (r *sessionRecorder) connect() *websocket.Conn {
 			warned = true
 		}
 		select {
-		case <-r.stop:
+		case <-r.abandon:
 			return nil
 		case <-time.After(backoff):
 		}

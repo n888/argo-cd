@@ -3,6 +3,7 @@ package application
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -240,7 +241,80 @@ func TestSessionRecorderUnreachableEndpointNeverBlocks(t *testing.T) {
 	}
 	start := time.Now()
 	r.Close()
-	assert.Less(t, time.Since(start), 3*time.Second, "Close must not wait out the full backoff schedule")
+	assert.Less(t, time.Since(start), recorderFlushTimeout+2*time.Second, "Close must return once the flush window expires")
+}
+
+func TestSessionRecorderFlushWindowRecoversTail(t *testing.T) {
+	t.Parallel()
+	// Reserve an address, then leave it closed so dials fail until teardown.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	meta := testSessionMeta()
+	dialURL, err := recordingDialURL("ws://"+addr+"/session", meta)
+	require.NoError(t, err)
+	r := newSessionRecorder(dialURL, meta.StartTime, testRecorderLogger())
+	r.recordOutput("tail data")
+
+	// The endpoint comes back one second into the flush window; the buffered tail
+	// and the end frame must still make it out.
+	ep := &mockRecordingEndpoint{t: t}
+	go func() {
+		time.Sleep(time.Second)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Errorf("failed to rebind reserved endpoint address: %v", err)
+			return
+		}
+		srv := &http.Server{Handler: http.HandlerFunc(ep.handle), ReadHeaderTimeout: 5 * time.Second}
+		t.Cleanup(func() { _ = srv.Close() })
+		_ = srv.Serve(ln)
+	}()
+
+	start := time.Now()
+	r.Close()
+	assert.Less(t, time.Since(start), recorderFlushTimeout+2*time.Second)
+
+	require.Eventually(t, func() bool {
+		frames := ep.allFrames()
+		return len(frames) >= 2 && frames[len(frames)-1].Operation == terminalrecording.OperationEnd
+	}, 5*time.Second, 10*time.Millisecond, "tail and end frame must be delivered inside the flush window")
+	frames := ep.allFrames()
+	assert.Equal(t, "tail data", frames[0].Data)
+	require.NotNil(t, frames[len(frames)-1].Dropped)
+	assert.Equal(t, int64(0), *frames[len(frames)-1].Dropped)
+}
+
+func TestSessionRecorderAbandonsEgressAfterFlushWindow(t *testing.T) {
+	t.Parallel()
+	// Completes the WebSocket handshake and then never reads, so a large enough
+	// write jams in the socket buffers until its write deadline.
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := websocket.Upgrader{}
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-hold
+	}))
+	t.Cleanup(func() { close(hold); srv.Close() })
+
+	r := newSessionRecorder("ws"+strings.TrimPrefix(srv.URL, "http")+"/session", time.Now(), testRecorderLogger())
+	r.recordOutput(strings.Repeat("x", 32<<20))
+
+	start := time.Now()
+	r.Close()
+	assert.Less(t, time.Since(start), recorderFlushTimeout+2*time.Second, "Close must return when the flush window expires")
+
+	select {
+	case <-r.done:
+	case <-time.After(recorderWriteTimeout + 3*time.Second):
+		t.Fatal("egress goroutine outlived abandonment by more than one bounded write")
+	}
 }
 
 func TestSessionRecorderPacesRedialsWhenConnectionsDieYoung(t *testing.T) {
@@ -285,7 +359,7 @@ func TestSessionRecorderDropsWhenBufferFull(t *testing.T) {
 		logger:    testRecorderLogger(),
 		frames:    make(chan terminalrecording.Frame, 2),
 		done:      make(chan struct{}),
-		stop:      make(chan struct{}),
+		abandon:   make(chan struct{}),
 	}
 	r.recordOutput("a")
 	r.recordOutput("b")
